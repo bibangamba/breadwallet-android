@@ -9,13 +9,13 @@ import com.breadwallet.presenter.entities.CryptoRequest;
 import com.breadwallet.presenter.interfaces.BRAuthCompletion;
 import com.breadwallet.repository.FeeRepository;
 import com.breadwallet.tools.animation.BRDialog;
-import com.breadwallet.tools.util.EventUtils;
 import com.breadwallet.tools.manager.BRReportsManager;
 import com.breadwallet.tools.manager.BRSharedPrefs;
 import com.breadwallet.tools.manager.SendManager;
 import com.breadwallet.tools.security.AuthManager;
 import com.breadwallet.tools.threads.executor.BRExecutor;
 import com.breadwallet.tools.util.BRConstants;
+import com.breadwallet.tools.util.EventUtils;
 import com.breadwallet.tools.util.Utils;
 import com.breadwallet.wallet.WalletsMaster;
 import com.breadwallet.wallet.abstracts.BaseWalletManager;
@@ -41,10 +41,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import javax.inject.Inject;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import static javax.servlet.http.HttpServletResponse.*;
+import static javax.servlet.http.HttpServletResponse.SC_BAD_REQUEST;
+import static javax.servlet.http.HttpServletResponse.SC_INTERNAL_SERVER_ERROR;
+import static javax.servlet.http.HttpServletResponse.SC_OK;
+import static javax.servlet.http.HttpServletResponse.SC_UNAUTHORIZED;
 import static org.eclipse.jetty.http.HttpMethod.GET;
 import static org.eclipse.jetty.http.HttpMethod.POST;
 
@@ -74,8 +78,6 @@ import static org.eclipse.jetty.http.HttpMethod.POST;
  */
 public class WalletPlugin implements Plugin {
     public static final String TAG = WalletPlugin.class.getName();
-    private static Continuation continuation;
-    private static Request globalBaseRequest;
     private static final String PATH_BASE = "/_wallet";
     private static final String PATH_INFO = "/info";
     private static final String PATH_EVENT = "/_event";
@@ -84,7 +86,6 @@ public class WalletPlugin implements Plugin {
     private static final String PATH_CURRENCIES = "/currencies";
     private static final String PATH_TRANSACTION = "/transaction";
     private static final String PATH_ADDRESSES = "/addresses";
-
     private static final String KEY_NO_WALLET = "no_wallet";
     private static final String KEY_RECEIVE_ADDRESS = "receive_address";
     private static final String KEY_BTC_DENOMINATION_DIGITS = "btc_denomination_digits";
@@ -100,7 +101,6 @@ public class WalletPlugin implements Plugin {
     private static final String KEY_AMOUNT = "amount";
     private static final String KEY_NUMERATOR = "numerator";
     private static final String KEY_DENOMINATOR = "denominator";
-
     private static final String KEY_ID = "id";
     private static final String KEY_TICKER = "ticker";
     private static final String KEY_NAME = "name";
@@ -111,8 +111,120 @@ public class WalletPlugin implements Plugin {
     private static final String KEY_HASH = "hash";
     private static final String KEY_TRANSMITTED = "transmitted";
     private static final String KEY_SIGNATURE = "signature";
-
     private static final int DOLLAR_IN_CENTS = 100;
+    private static Continuation continuation;
+    private static Request globalBaseRequest;
+    @Inject
+    public FeeRepository mFeeRepository;
+
+    private static void finalizeTx(final boolean succeed, final String hash) {
+        BRExecutor.getInstance().forLightWeightBackgroundTasks().execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (!succeed || Utils.isNullOrEmpty(hash)) {
+                        try {
+                            ((HttpServletResponse) continuation.getServletResponse()).sendError(SC_INTERNAL_SERVER_ERROR);
+                        } catch (IOException e) {
+                            Log.e(TAG, "finalizeTx: failed to send error 500: ", e);
+                            e.printStackTrace();
+                        }
+                        return;
+                    }
+                    if (continuation == null) {
+                        Log.e(TAG, "finalizeTx: WARNING continuation is null");
+                        return;
+                    }
+
+                    JSONObject result = new JSONObject();
+                    try {
+                        result.put(KEY_HASH, hash);
+                        result.put(KEY_TRANSMITTED, true);
+                    } catch (JSONException e) {
+                        e.printStackTrace();
+                    }
+
+                    try {
+                        continuation.getServletResponse().setContentType(BRConstants.CONTENT_TYPE_JSON_CHARSET_UTF8);
+                        continuation.getServletResponse().setCharacterEncoding(StandardCharsets.UTF_8.name());
+                        continuation.getServletResponse().getWriter().print(result.toString());
+                        Log.d(TAG, "finalizeTx: finished with writing to the response: " + result);
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        Log.e(TAG, "sendBitIdResponse Failed to send json: ", e);
+                    }
+                    ((HttpServletResponse) continuation.getServletResponse()).setStatus(SC_OK);
+                } finally {
+                    cleanUp();
+                }
+            }
+        });
+    }
+
+    public static void sendBitIdResponse(final JSONObject restJson,
+                                         final boolean authenticated) {
+        BRExecutor.getInstance().forBackgroundTasks().execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (!authenticated) {
+                        try {
+                            ((HttpServletResponse) continuation.getServletResponse()).sendError(SC_UNAUTHORIZED);
+                        } catch (IOException e) {
+                            Log.e(TAG, "sendBitIdResponse: failed to send error 401: ", e);
+                            e.printStackTrace();
+                        }
+                        return;
+                    }
+                    if (restJson == null || restJson.isNull(KEY_SIGNATURE)) {
+                        Log.e(TAG, "sendBitIdResponse: WARNING restJson is null: " + restJson);
+                        try {
+                            ((HttpServletResponse) continuation.getServletResponse()).sendError(SC_INTERNAL_SERVER_ERROR, "json malformed or null");
+                        } catch (IOException e) {
+                            Log.e(TAG, "sendBitIdResponse: failed to send error 401: ", e);
+                            e.printStackTrace();
+                        }
+                        return;
+                    }
+                    if (continuation == null) {
+                        Log.e(TAG, "sendBitIdResponse: WARNING continuation is null");
+                        return;
+                    }
+
+                    try {
+                        continuation.getServletResponse().setContentType(BRConstants.CONTENT_TYPE_JSON_CHARSET_UTF8);
+                        continuation.getServletResponse().setCharacterEncoding(StandardCharsets.UTF_8.name());
+                        continuation.getServletResponse().getWriter().print(restJson);
+                        Log.d(TAG, "sendBitIdResponse: finished with writing to the response: " + restJson);
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        Log.e(TAG, "sendBitIdResponse Failed to send json: ", e);
+                    }
+                    ((HttpServletResponse) continuation.getServletResponse()).setStatus(SC_OK);
+                } finally {
+                    cleanUp();
+                }
+            }
+        });
+
+    }
+
+    private static void cleanUp() {
+        if (globalBaseRequest != null) {
+            globalBaseRequest.setHandled(true);
+        }
+        if (continuation != null) {
+            continuation.complete();
+        }
+        continuation = null;
+        globalBaseRequest = null;
+    }
+
+    private static String getLegacyAddress(Context context, BaseWalletManager walletManager) {
+        return walletManager instanceof WalletBitcoinManager
+                ? ((WalletBitcoinManager) walletManager).getWallet().getLegacyAddress().stringify()
+                : walletManager.getReceiveAddress(context).stringify();
+    }
 
     @Override
     public boolean handle(String target, final Request baseRequest, HttpServletRequest request, final HttpServletResponse response) {
@@ -317,7 +429,7 @@ public class WalletPlugin implements Plugin {
                 BRReportsManager.reportBug(new IllegalArgumentException("_wallet/currencies created an empty json"));
                 return BRHTTPHelper.handleError(SC_INTERNAL_SERVER_ERROR, "Failed to create json", baseRequest, response);
             }
-            APIClient.BRResponse resp = new APIClient.BRResponse(arr.toString().getBytes(), SC_OK,  BRConstants.CONTENT_TYPE_JSON_CHARSET_UTF8);
+            APIClient.BRResponse resp = new APIClient.BRResponse(arr.toString().getBytes(), SC_OK, BRConstants.CONTENT_TYPE_JSON_CHARSET_UTF8);
             return BRHTTPHelper.handleSuccess(resp, baseRequest, response);
         } else if (target.startsWith(PATH_BASE + PATH_TRANSACTION)) {
             String reqBody = null;
@@ -399,8 +511,10 @@ public class WalletPlugin implements Plugin {
 
         // If BTC, set trade fee option and wallet fee rate to 'priority'
         if (currency.equalsIgnoreCase(WalletBitcoinManager.BITCOIN_CURRENCY_CODE)) {
-            FeeRepository.getInstance(app).putPreferredFeeOptionForCurrency(currency, FeeOption.PRIORITY);
-            BigDecimal fee = FeeRepository.getInstance(app).getFeeByCurrency(currency, FeeOption.PRIORITY);
+            Log.d(TAG, "#################### mFeeRepository: " + mFeeRepository);
+
+            mFeeRepository.putPreferredFeeOptionForCurrency(currency, FeeOption.PRIORITY);
+            BigDecimal fee = mFeeRepository.getFeeByCurrency(currency, FeeOption.PRIORITY);
             ((WalletBitcoinManager) wm).getWallet().setFeePerKb(fee.longValue());
         }
 
@@ -460,114 +574,5 @@ public class WalletPlugin implements Plugin {
 
         }
         return arr;
-    }
-
-    private static void finalizeTx(final boolean succeed, final String hash) {
-        BRExecutor.getInstance().forLightWeightBackgroundTasks().execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    if (!succeed || Utils.isNullOrEmpty(hash)) {
-                        try {
-                            ((HttpServletResponse) continuation.getServletResponse()).sendError(SC_INTERNAL_SERVER_ERROR);
-                        } catch (IOException e) {
-                            Log.e(TAG, "finalizeTx: failed to send error 500: ", e);
-                            e.printStackTrace();
-                        }
-                        return;
-                    }
-                    if (continuation == null) {
-                        Log.e(TAG, "finalizeTx: WARNING continuation is null");
-                        return;
-                    }
-
-                    JSONObject result = new JSONObject();
-                    try {
-                        result.put(KEY_HASH, hash);
-                        result.put(KEY_TRANSMITTED, true);
-                    } catch (JSONException e) {
-                        e.printStackTrace();
-                    }
-
-                    try {
-                        continuation.getServletResponse().setContentType(BRConstants.CONTENT_TYPE_JSON_CHARSET_UTF8);
-                        continuation.getServletResponse().setCharacterEncoding(StandardCharsets.UTF_8.name());
-                        continuation.getServletResponse().getWriter().print(result.toString());
-                        Log.d(TAG, "finalizeTx: finished with writing to the response: " + result);
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        Log.e(TAG, "sendBitIdResponse Failed to send json: ", e);
-                    }
-                    ((HttpServletResponse) continuation.getServletResponse()).setStatus(SC_OK);
-                } finally {
-                    cleanUp();
-                }
-            }
-        });
-    }
-
-    public static void sendBitIdResponse(final JSONObject restJson,
-                                         final boolean authenticated) {
-        BRExecutor.getInstance().forBackgroundTasks().execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    if (!authenticated) {
-                        try {
-                            ((HttpServletResponse) continuation.getServletResponse()).sendError(SC_UNAUTHORIZED);
-                        } catch (IOException e) {
-                            Log.e(TAG, "sendBitIdResponse: failed to send error 401: ", e);
-                            e.printStackTrace();
-                        }
-                        return;
-                    }
-                    if (restJson == null || restJson.isNull(KEY_SIGNATURE)) {
-                        Log.e(TAG, "sendBitIdResponse: WARNING restJson is null: " + restJson);
-                        try {
-                            ((HttpServletResponse) continuation.getServletResponse()).sendError(SC_INTERNAL_SERVER_ERROR, "json malformed or null");
-                        } catch (IOException e) {
-                            Log.e(TAG, "sendBitIdResponse: failed to send error 401: ", e);
-                            e.printStackTrace();
-                        }
-                        return;
-                    }
-                    if (continuation == null) {
-                        Log.e(TAG, "sendBitIdResponse: WARNING continuation is null");
-                        return;
-                    }
-
-                    try {
-                        continuation.getServletResponse().setContentType(BRConstants.CONTENT_TYPE_JSON_CHARSET_UTF8);
-                        continuation.getServletResponse().setCharacterEncoding(StandardCharsets.UTF_8.name());
-                        continuation.getServletResponse().getWriter().print(restJson);
-                        Log.d(TAG, "sendBitIdResponse: finished with writing to the response: " + restJson);
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        Log.e(TAG, "sendBitIdResponse Failed to send json: ", e);
-                    }
-                    ((HttpServletResponse) continuation.getServletResponse()).setStatus(SC_OK);
-                } finally {
-                    cleanUp();
-                }
-            }
-        });
-
-    }
-
-    private static void cleanUp() {
-        if (globalBaseRequest != null) {
-            globalBaseRequest.setHandled(true);
-        }
-        if (continuation != null) {
-            continuation.complete();
-        }
-        continuation = null;
-        globalBaseRequest = null;
-    }
-
-    private static String getLegacyAddress(Context context, BaseWalletManager walletManager) {
-        return walletManager instanceof WalletBitcoinManager
-                ? ((WalletBitcoinManager) walletManager).getWallet().getLegacyAddress().stringify()
-                : walletManager.getReceiveAddress(context).stringify();
     }
 }

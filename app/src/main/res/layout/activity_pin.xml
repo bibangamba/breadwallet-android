@@ -6,7 +6,7 @@
     android:id="@+id/activity_pit"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context="com.breadwallet.presenter.activities.LoginActivity">
+    tools:applicationContext="com.breadwallet.presenter.activities.LoginActivity">
 
 
     <com.breadwallet.presenter.customviews.BaseTextView

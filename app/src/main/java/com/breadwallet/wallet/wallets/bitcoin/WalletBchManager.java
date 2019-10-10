@@ -7,16 +7,20 @@ import com.breadwallet.BuildConfig;
 import com.breadwallet.core.BRCoreAddress;
 import com.breadwallet.core.BRCoreChainParams;
 import com.breadwallet.core.BRCoreMasterPubKey;
+import com.breadwallet.dagger.component.AppComponent;
+import com.breadwallet.dagger.component.DaggerAppComponent;
+import com.breadwallet.dagger.module.AppModule;
 import com.breadwallet.model.FeeOption;
 import com.breadwallet.presenter.entities.BRSettingsItem;
 import com.breadwallet.presenter.entities.CurrencyEntity;
 import com.breadwallet.repository.FeeRepository;
 import com.breadwallet.repository.RatesRepository;
-import com.breadwallet.tools.util.EventUtils;
+import com.breadwallet.repository.RepoModule;
 import com.breadwallet.tools.manager.BRSharedPrefs;
 import com.breadwallet.tools.security.BRKeyStore;
 import com.breadwallet.tools.threads.executor.BRExecutor;
 import com.breadwallet.tools.util.BRConstants;
+import com.breadwallet.tools.util.EventUtils;
 import com.breadwallet.tools.util.SettingsUtil;
 import com.breadwallet.tools.util.Utils;
 import com.breadwallet.wallet.WalletsMaster;
@@ -25,6 +29,8 @@ import com.breadwallet.wallet.configs.WalletSettingsConfiguration;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+
+import javax.inject.Inject;
 
 /**
  * BreadWallet
@@ -52,15 +58,52 @@ import java.util.List;
  */
 public final class WalletBchManager extends BaseBitcoinWalletManager {
 
+    public static final String NAME = "Bitcoin Cash";
     private static final String TAG = WalletBchManager.class.getName();
     private static final String CURRENCY_CODE = BITCASH_CURRENCY_CODE;
-    public static final String NAME = "Bitcoin Cash";
     private static final String SCHEME = BuildConfig.BITCOIN_TESTNET ? "bchtest" : "bitcoincash";
     private static final String COLOR = "#478559";
     private static final long MAINNET_FORK_TIME = 1501568580; // Tuesday, August 1, 2017 6:23:00 AM GMT in seconds since Epoch
     private static final long TESTNET_FORK_TIME = 1501597117; // Tuesday, August 1, 2017 2:18:37 PM GMT in seconds since Epoch
 
     private static WalletBchManager mInstance;
+
+    @Inject
+    public FeeRepository mFeeRepository;
+
+    private WalletBchManager(final Context context, BRCoreMasterPubKey masterPubKey,
+                             BRCoreChainParams chainParams,
+                             double earliestPeerTime) {
+        super(context, masterPubKey, chainParams, earliestPeerTime);
+        AppComponent component = DaggerAppComponent.builder()
+                .appModule(new AppModule(context))
+                .repoModule(new RepoModule())
+                .build();
+        component.inject(this);
+        Log.d(TAG, "#################### mFeeRepository: " + mFeeRepository);
+
+        BRExecutor.getInstance().forLightWeightBackgroundTasks().execute(new Runnable() {
+            @Override
+            public void run() {
+                if (BRSharedPrefs.getStartHeight(context, getCurrencyCode()) == 0)
+                    BRSharedPrefs.putStartHeight(context, getCurrencyCode(), getPeerManager().getLastBlockHeight());
+
+                String currencyCode = getCurrencyCode();
+                FeeOption preferredFeeOption = mFeeRepository.getPreferredFeeOptionByCurrency(currencyCode);
+                BigDecimal preferredFee = mFeeRepository.getFeeByCurrency(currencyCode, preferredFeeOption);
+
+                if (preferredFee.compareTo(BigDecimal.ZERO) == 0) {
+                    preferredFee = new BigDecimal(getWallet().getDefaultFeePerKb());
+                    EventUtils.pushEvent(EventUtils.EVENT_WALLET_DID_USE_DEFAULT_FEE_PER_KB);
+                }
+                getWallet().setFeePerKb(preferredFee.longValue());
+            }
+        });
+        WalletsMaster.getInstance().setSpendingLimitIfNotSet(context, this);
+
+        setSettingsConfig(new WalletSettingsConfiguration(context, getCurrencyCode(), SettingsUtil.getBitcoinCashSettings(context), getFingerprintLimits(context)));
+//          BRPeerManager.getInstance().updateFixedPeer(ctx);//todo reimplement the fixed peer
+    }
 
     public static synchronized WalletBchManager getInstance(Context context) {
         if (mInstance == null) {
@@ -77,33 +120,6 @@ public final class WalletBchManager extends BaseBitcoinWalletManager {
                     BRCoreChainParams.testnetBcashChainParams : BRCoreChainParams.mainnetBcashChainParams, time);
         }
         return mInstance;
-    }
-
-    private WalletBchManager(final Context context, BRCoreMasterPubKey masterPubKey,
-                             BRCoreChainParams chainParams,
-                             double earliestPeerTime) {
-        super(context, masterPubKey, chainParams, earliestPeerTime);
-        BRExecutor.getInstance().forLightWeightBackgroundTasks().execute(new Runnable() {
-            @Override
-            public void run() {
-                if (BRSharedPrefs.getStartHeight(context, getCurrencyCode()) == 0)
-                    BRSharedPrefs.putStartHeight(context, getCurrencyCode(), getPeerManager().getLastBlockHeight());
-
-                String currencyCode = getCurrencyCode();
-                FeeOption preferredFeeOption = FeeRepository.getInstance(context).getPreferredFeeOptionByCurrency(currencyCode);
-                BigDecimal preferredFee = FeeRepository.getInstance(context).getFeeByCurrency(currencyCode, preferredFeeOption);
-
-                if (preferredFee.compareTo(BigDecimal.ZERO) == 0) {
-                    preferredFee = new BigDecimal(getWallet().getDefaultFeePerKb());
-                    EventUtils.pushEvent(EventUtils.EVENT_WALLET_DID_USE_DEFAULT_FEE_PER_KB);
-                }
-                getWallet().setFeePerKb(preferredFee.longValue());
-            }
-        });
-        WalletsMaster.getInstance().setSpendingLimitIfNotSet(context, this);
-
-        setSettingsConfig(new WalletSettingsConfiguration(context, getCurrencyCode(), SettingsUtil.getBitcoinCashSettings(context), getFingerprintLimits(context)));
-//          BRPeerManager.getInstance().updateFixedPeer(ctx);//todo reimplement the fixed peer
     }
 
     protected String getTag() {

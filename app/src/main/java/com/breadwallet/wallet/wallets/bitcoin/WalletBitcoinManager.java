@@ -84,8 +84,8 @@ public final class WalletBitcoinManager extends BaseBitcoinWalletManager {
                     BRSharedPrefs.putStartHeight(context, getCurrencyCode(), getPeerManager().getLastBlockHeight());
 
                 String currencyCode = getCurrencyCode();
-                FeeOption preferredFeeOption = FeeRepository.getInstance(context).getPreferredFeeOptionByCurrency(currencyCode);
-                BigDecimal preferredFee = FeeRepository.getInstance(context).getFeeByCurrency(currencyCode, preferredFeeOption);
+                FeeOption preferredFeeOption = mFeeRepository.getPreferredFeeOptionByCurrency(currencyCode);
+                BigDecimal preferredFee = mFeeRepository.getFeeByCurrency(currencyCode, preferredFeeOption);
 
                 if (preferredFee.compareTo(BigDecimal.ZERO) == 0) {
                     preferredFee = new BigDecimal(getWallet().getDefaultFeePerKb());

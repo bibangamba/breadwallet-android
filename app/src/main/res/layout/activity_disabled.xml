@@ -7,7 +7,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/bread_gradient"
-    tools:context="com.breadwallet.presenter.activities.DisabledActivity">
+    tools:applicationContext="com.breadwallet.presenter.activities.DisabledActivity">
 
 
     <com.breadwallet.presenter.customviews.BRButton

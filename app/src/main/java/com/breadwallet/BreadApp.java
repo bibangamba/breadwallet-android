@@ -17,17 +17,16 @@ import android.view.Display;
 import android.view.WindowManager;
 
 import com.breadwallet.app.ApplicationLifecycleObserver;
-import com.breadwallet.protocols.messageexchange.InboxPollingHandler;
-import com.breadwallet.tools.manager.BRApiManager;
-import com.breadwallet.tools.util.ServerBundlesHelper;
-import com.breadwallet.view.dialog.DialogActivity;
-import com.breadwallet.view.dialog.DialogActivity.DialogType;
 import com.breadwallet.app.util.UserMetricsUtil;
-import com.breadwallet.presenter.activities.DisabledActivity;
+import com.breadwallet.dagger.component.AppComponent;
+import com.breadwallet.dagger.component.DaggerAppComponent;
+import com.breadwallet.dagger.module.AppModule;
 import com.breadwallet.protocols.messageexchange.InboxPollingAppLifecycleObserver;
-import com.breadwallet.tools.animation.UiUtils;
+import com.breadwallet.protocols.messageexchange.InboxPollingHandler;
+import com.breadwallet.repository.RepoModule;
 import com.breadwallet.tools.crypto.Base32;
 import com.breadwallet.tools.crypto.CryptoHelper;
+import com.breadwallet.tools.manager.BRApiManager;
 import com.breadwallet.tools.manager.BRReportsManager;
 import com.breadwallet.tools.manager.BRSharedPrefs;
 import com.breadwallet.tools.manager.InternetManager;
@@ -35,8 +34,11 @@ import com.breadwallet.tools.security.BRKeyStore;
 import com.breadwallet.tools.services.BRDFirebaseMessagingService;
 import com.breadwallet.tools.threads.executor.BRExecutor;
 import com.breadwallet.tools.util.EventUtils;
+import com.breadwallet.tools.util.ServerBundlesHelper;
 import com.breadwallet.tools.util.TokenUtil;
 import com.breadwallet.tools.util.Utils;
+import com.breadwallet.view.dialog.DialogActivity;
+import com.breadwallet.view.dialog.DialogActivity.DialogType;
 import com.breadwallet.wallet.util.SyncUpdateHandler;
 import com.breadwallet.wallet.util.WalletConnectionCleanUpWorker;
 import com.breadwallet.wallet.util.WalletConnectionWorker;
@@ -86,50 +88,16 @@ public class BreadApp extends Application implements ApplicationLifecycleObserve
     private static final String WALLET_ID_SEPARATOR = " ";
     private static final int NUMBER_OF_BYTES_FOR_SHA256_NEEDED = 10;
     private static final long SERVER_SHUTDOWN_DELAY_MILLIS = 60000; // 60 seconds
-
-    private static BreadApp mInstance;
     public static int mDisplayHeightPx;
     public static int mDisplayWidthPx;
+    private static BreadApp mInstance;
     private static long mBackgroundedTime;
     private static Activity mCurrentActivity;
+    AppComponent mAppComponent;
     private int mDelayServerShutdownCode = -1;
     private boolean mDelayServerShutdown = false;
     private Handler mServerShutdownHandler = null;
     private Runnable mServerShutdownRunnable = null;
-
-    @Override
-    public void onCreate() {
-        super.onCreate();
-
-        mInstance = this;
-
-        BRSharedPrefs.provideContext(this);
-
-        final Fabric fabric = new Fabric.Builder(this)
-                .kits(new Crashlytics.Builder().build())
-                .debuggable(BuildConfig.DEBUG)// Enables Crashlytics debugger
-                .build();
-        Fabric.with(fabric);
-
-        WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
-        Display display = wm.getDefaultDisplay();
-        Point size = new Point();
-        display.getSize(size);
-        mDisplayWidthPx = size.x;
-        mDisplayHeightPx = size.y;
-
-        // Initialize application lifecycle observer and register this application for events.
-        ProcessLifecycleOwner.get().getLifecycle().addObserver(new ApplicationLifecycleObserver());
-        ApplicationLifecycleObserver.addApplicationLifecycleListener(mInstance);
-
-        initialize(true);
-
-        registerReceiver(InternetManager.getInstance(), new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION));
-
-        // Start our local server as soon as the application instance is created, since we need to
-        // display support WebViews during onboarding.
-        HTTPServer.getInstance().startServer(this);
-    }
 
     /**
      * Initializes the application state.
@@ -270,6 +238,76 @@ public class BreadApp extends Application implements ApplicationLifecycleObserve
         mCurrentActivity = app;
     }
 
+    /**
+     * @return host or debug host if build is DEBUG
+     */
+    public static String getHost() {
+        if (BuildConfig.DEBUG) {
+            String host = BRSharedPrefs.getDebugHost(mInstance);
+            if (!Utils.isNullOrEmpty(host)) {
+                return host;
+            }
+        }
+        return HOST;
+    }
+
+    /**
+     * Sets the debug host into the shared preferences, only do that if the build is DEBUG.
+     *
+     * @param host
+     */
+    public static void setDebugHost(String host) {
+        if (BuildConfig.DEBUG) {
+            BRSharedPrefs.putDebugHost(mCurrentActivity, host);
+        }
+    }
+
+    public AppComponent getAppComponent() {
+        return mAppComponent;
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+
+        mInstance = this;
+
+
+        mAppComponent = DaggerAppComponent.builder()
+                .appModule(new AppModule(mInstance))
+                .repoModule(new RepoModule())
+                .build();
+
+        mAppComponent.inject(this);
+
+        BRSharedPrefs.provideContext(this);
+
+        final Fabric fabric = new Fabric.Builder(this)
+                .kits(new Crashlytics.Builder().build())
+                .debuggable(BuildConfig.DEBUG)// Enables Crashlytics debugger
+                .build();
+        Fabric.with(fabric);
+
+        WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        Display display = wm.getDefaultDisplay();
+        Point size = new Point();
+        display.getSize(size);
+        mDisplayWidthPx = size.x;
+        mDisplayHeightPx = size.y;
+
+        // Initialize application lifecycle observer and register this application for events.
+        ProcessLifecycleOwner.get().getLifecycle().addObserver(new ApplicationLifecycleObserver());
+        ApplicationLifecycleObserver.addApplicationLifecycleListener(mInstance);
+
+        initialize(true);
+
+        registerReceiver(InternetManager.getInstance(), new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION));
+
+        // Start our local server as soon as the application instance is created, since we need to
+        // display support WebViews during onboarding.
+        HTTPServer.getInstance().startServer(this);
+    }
+
     @Override
     public void onLifeCycle(Lifecycle.Event event) {
         switch (event) {
@@ -355,34 +393,11 @@ public class BreadApp extends Application implements ApplicationLifecycleObserve
 
     /**
      * Get the time when the app was sent to background.
+     *
      * @return the timestamp when the app was sent sent to background or 0 if it's in the foreground.
      */
     public long getBackgroundedTime() {
         return mBackgroundedTime;
-    }
-
-    /**
-     * @return host or debug host if build is DEBUG
-     */
-    public static String getHost() {
-        if (BuildConfig.DEBUG) {
-            String host = BRSharedPrefs.getDebugHost(mInstance);
-            if (!Utils.isNullOrEmpty(host)) {
-                return host;
-            }
-        }
-        return HOST;
-    }
-
-    /**
-     * Sets the debug host into the shared preferences, only do that if the build is DEBUG.
-     *
-     * @param host
-     */
-    public static void setDebugHost(String host) {
-        if (BuildConfig.DEBUG) {
-            BRSharedPrefs.putDebugHost(mCurrentActivity, host);
-        }
     }
 
     /**

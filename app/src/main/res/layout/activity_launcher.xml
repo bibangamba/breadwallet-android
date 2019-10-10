@@ -6,7 +6,7 @@
     android:id="@+id/activity_pit"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context="com.breadwallet.ui.launcher.LauncherActivity">
+    tools:applicationContext="com.breadwallet.ui.launcher.LauncherActivity">
 
 
     <ImageView

@@ -6,11 +6,15 @@ import android.support.annotation.WorkerThread;
 import android.text.format.DateUtils;
 import android.util.Log;
 
+import com.breadwallet.dagger.component.AppComponent;
+import com.breadwallet.dagger.component.DaggerAppComponent;
+import com.breadwallet.dagger.module.AppModule;
 import com.breadwallet.model.FeeOption;
 import com.breadwallet.model.PriceChange;
 import com.breadwallet.presenter.entities.CurrencyEntity;
 import com.breadwallet.repository.FeeRepository;
 import com.breadwallet.repository.RatesRepository;
+import com.breadwallet.repository.RepoModule;
 import com.breadwallet.tools.animation.UiUtils;
 import com.breadwallet.tools.threads.executor.BRExecutor;
 import com.breadwallet.tools.util.BRConstants;
@@ -39,6 +43,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+
+import javax.inject.Inject;
 
 import okhttp3.Request;
 
@@ -86,8 +92,11 @@ public final class BRApiManager {
     private static final String FEE_FIELD_REGULAR = "fee_per_kb";
     private static final String FEE_FIELD_ECONOMY = "fee_per_kb_economy";
     private static final String FEE_FIELD_PRIORITY = "fee_per_kb_priority";
-
     private static BRApiManager mInstance;
+
+    @Inject
+    public FeeRepository mFeeRepository;
+
     private Timer mTimer;
     private TimerTask mTimerTask;
 
@@ -101,12 +110,141 @@ public final class BRApiManager {
         return mInstance;
     }
 
+    @WorkerThread
+    private static JSONArray fetchFiatRates(Context app) {
+        //Fetch the BTC-Fiat rates
+        String url = APIClient.getBaseURL() + CURRENCY_QUERY_STRING + WalletBitcoinManager.BITCOIN_CURRENCY_CODE;
+        String jsonString = urlGET(app, url);
+        JSONArray jsonArray = null;
+        if (jsonString == null) {
+            Log.e(TAG, "fetchFiatRates: failed, response is null");
+            return null;
+        }
+        try {
+            JSONObject obj = new JSONObject(jsonString);
+            jsonArray = obj.getJSONArray(BRConstants.BODY);
+        } catch (JSONException ex) {
+            Log.e(TAG, "fetchFiatRates: ", ex);
+        }
+        return jsonArray == null ? backupFetchRates(app) : jsonArray;
+    }
+
+    /**
+     * Fetches data from /currencies api meant for new icos and tokens with no public rates yet.
+     *
+     * @param context Context
+     */
+    @WorkerThread
+    private static void fetchNewTokensData(Context context) {
+        String url = APIClient.getBaseURL() + CURRENCIES_PATH;
+        String tokenDataJsonString = urlGET(context, url);
+        if (tokenDataJsonString == null || tokenDataJsonString.length() == 0) {
+            Log.e(TAG, "fetchFiatRates: failed, response is null");
+            return;
+        }
+        try {
+            List<CurrencyEntity> currencyEntities = new ArrayList<>();
+            JSONArray tokenDataArray = new JSONArray(tokenDataJsonString);
+            for (int i = 0; i < tokenDataArray.length(); i++) {
+                JSONObject tokenDataJsonObject = tokenDataArray.getJSONObject(i);
+                if (tokenDataJsonObject.has(CONTRACT_INITIAL_VALUE)) {
+                    String priceInEth = tokenDataJsonObject.getString(CONTRACT_INITIAL_VALUE)
+                            .replace(WalletEthManager.ETH_CURRENCY_CODE, "").trim();
+                    String name = tokenDataJsonObject.getString(BRConstants.NAME);
+                    String code = tokenDataJsonObject.getString(BRConstants.CODE);
+                    CurrencyEntity ethCurrencyEntity =
+                            new CurrencyEntity(WalletEthManager.ETH_CURRENCY_CODE, name, Float.valueOf(priceInEth), code);
+                    CurrencyEntity currencyEntity = convertEthRateToBtc(context, ethCurrencyEntity);
+                    currencyEntities.add(currencyEntity);
+                }
+            }
+            RatesRepository.getInstance(context).putCurrencyRates(currencyEntities);
+        } catch (JSONException | NumberFormatException ex) {
+            Log.e(TAG, "fetchNewTokensData: ", ex);
+        }
+    }
+
+    private static CurrencyEntity convertEthRateToBtc(Context context, CurrencyEntity currencyEntity) {
+        if (currencyEntity == null) {
+            return null;
+        }
+
+        CurrencyEntity ethBtcExchangeRate = RatesRepository.getInstance(context)
+                .getCurrencyByCode(WalletEthManager.ETH_CURRENCY_CODE, WalletBitcoinManager.BITCOIN_CURRENCY_CODE);
+        if (ethBtcExchangeRate == null) {
+            Log.e(TAG, "computeCccRates: ethBtcExchangeRate is null");
+            return null;
+        }
+        float newRate = new BigDecimal(currencyEntity.rate).multiply(new BigDecimal(ethBtcExchangeRate.rate)).floatValue();
+        return new CurrencyEntity(WalletBitcoinManager.BITCOIN_CURRENCY_CODE, currencyEntity.name, newRate, currencyEntity.iso);
+    }
+
+    /**
+     * uses https://bitpay.com/rates to fetch the rates as a backup in case our api is down.
+     *
+     * @param context
+     * @return JSONArray with rates data.
+     */
+    @WorkerThread
+    private static JSONArray backupFetchRates(Context context) {
+        String ratesJsonString = urlGET(context, BIT_PAY_URL);
+        JSONArray ratesJsonArray = null;
+        if (ratesJsonString != null) {
+            try {
+                JSONObject ratesJsonObject = new JSONObject(ratesJsonString);
+                ratesJsonArray = ratesJsonObject.getJSONArray(BRConstants.DATA);
+            } catch (JSONException e) {
+                Log.e(TAG, "backupFetchRates: ", e);
+            }
+            return ratesJsonArray;
+        }
+        return null;
+    }
+
+    @WorkerThread
+    public static String urlGET(Context app, String myURL) {
+        Request.Builder builder = new Request.Builder()
+                .url(myURL)
+                .header(BRConstants.HEADER_CONTENT_TYPE, BRConstants.CONTENT_TYPE_JSON_CHARSET_UTF8)
+                .header(BRConstants.HEADER_ACCEPT, BRConstants.CONTENT_TYPE_JSON_CHARSET_UTF8)
+                .get();
+
+        Request request = builder.build();
+        String bodyText = null;
+        APIClient.BRResponse resp = APIClient.getInstance(app).sendRequest(request, false);
+
+        try {
+            bodyText = resp.getBodyText();
+            String strDate = resp.getHeaders().get(BRConstants.DATE);
+            if (strDate == null) {
+                Log.e(TAG, "urlGET: strDate is null!");
+                return bodyText;
+            }
+            SimpleDateFormat formatter = new SimpleDateFormat(DATE_FORMAT, Locale.US);
+            Date date = formatter.parse(strDate);
+            long timeStamp = date.getTime();
+            BRSharedPrefs.putSecureTime(app, timeStamp);
+        } catch (ParseException e) {
+            Log.e(TAG, "urlGET: ", e);
+        }
+        return bodyText;
+    }
+
     /**
      * Retrieves fee rates for the given currency and stores them in the fee repository.
-     * @param context the context
+     *
+     * @param context      the context
      * @param currencyCode the currency for which fee rates are being retrieved
      */
-    public static void updateFeeForCurrency(Context context, String currencyCode) {
+    public void updateFeeForCurrency(Context context, String currencyCode) {
+        AppComponent component = DaggerAppComponent.builder()
+                .appModule(new AppModule(context))
+                .repoModule(new RepoModule())
+                .build();
+        component.inject(this);
+
+        Log.d(TAG, "#################### mFeeRepository: " + mFeeRepository);
+
         String feeUpdateJSONStr = BRApiManager.urlGET(context, String.format(FEE_URL_FORMAT, APIClient.getBaseURL(), currencyCode));
         long timestamp = System.currentTimeMillis();
 
@@ -125,21 +263,21 @@ public final class BRApiManager {
             Log.d(TAG, "updateFee: " + currencyCode + ":" + fee + "|" + economyFee + " | " + priorityFee);
 
             if (fee.compareTo(BigDecimal.ZERO) > 0) {
-                FeeRepository.getInstance(context).putFeeForCurrency(currencyCode, fee, FeeOption.REGULAR, timestamp);
+                mFeeRepository.putFeeForCurrency(currencyCode, fee, FeeOption.REGULAR, timestamp);
             } else {
                 BRReportsManager.reportBug(new NullPointerException("Fee is weird:" + fee));
                 Log.d(TAG, "Error: Fee is unexpected value");
             }
 
             if (economyFee.compareTo(BigDecimal.ZERO) > 0) {
-                FeeRepository.getInstance(context).putFeeForCurrency(currencyCode, economyFee, FeeOption.ECONOMY, timestamp);
+                mFeeRepository.putFeeForCurrency(currencyCode, economyFee, FeeOption.ECONOMY, timestamp);
             } else {
                 BRReportsManager.reportBug(new NullPointerException("Economy fee is weird:" + economyFee));
                 Log.d(TAG, "Error: Economy fee is unexpected value");
             }
 
             if (priorityFee.compareTo(BigDecimal.ZERO) > 0) {
-                FeeRepository.getInstance(context).putFeeForCurrency(currencyCode, priorityFee, FeeOption.PRIORITY, timestamp);
+                mFeeRepository.putFeeForCurrency(currencyCode, priorityFee, FeeOption.PRIORITY, timestamp);
             } else {
                 BRReportsManager.reportBug(new NullPointerException("Priority fee is weird:" + economyFee));
                 Log.d(TAG, "Error: Priority fee is unexpected value");
@@ -195,7 +333,9 @@ public final class BRApiManager {
         };
     }
 
-    /** Synchronously updates RateRepository data. */
+    /**
+     * Synchronously updates RateRepository data.
+     */
     @WorkerThread
     public void updateRatesSync(final Context context) {
         Log.d(TAG, "Fetching rates");
@@ -322,126 +462,6 @@ public final class BRApiManager {
             mTimer.cancel();
             mTimer = null;
         }
-    }
-
-    @WorkerThread
-    private static JSONArray fetchFiatRates(Context app) {
-        //Fetch the BTC-Fiat rates
-        String url = APIClient.getBaseURL() + CURRENCY_QUERY_STRING + WalletBitcoinManager.BITCOIN_CURRENCY_CODE;
-        String jsonString = urlGET(app, url);
-        JSONArray jsonArray = null;
-        if (jsonString == null) {
-            Log.e(TAG, "fetchFiatRates: failed, response is null");
-            return null;
-        }
-        try {
-            JSONObject obj = new JSONObject(jsonString);
-            jsonArray = obj.getJSONArray(BRConstants.BODY);
-        } catch (JSONException ex) {
-            Log.e(TAG, "fetchFiatRates: ", ex);
-        }
-        return jsonArray == null ? backupFetchRates(app) : jsonArray;
-    }
-
-    /**
-     * Fetches data from /currencies api meant for new icos and tokens with no public rates yet.
-     *
-     * @param context Context
-     */
-    @WorkerThread
-    private static void fetchNewTokensData(Context context) {
-        String url = APIClient.getBaseURL() + CURRENCIES_PATH;
-        String tokenDataJsonString = urlGET(context, url);
-        if (tokenDataJsonString == null || tokenDataJsonString.length() == 0) {
-            Log.e(TAG, "fetchFiatRates: failed, response is null");
-            return;
-        }
-        try {
-            List<CurrencyEntity> currencyEntities = new ArrayList<>();
-            JSONArray tokenDataArray = new JSONArray(tokenDataJsonString);
-            for (int i = 0; i < tokenDataArray.length(); i++) {
-                JSONObject tokenDataJsonObject =  tokenDataArray.getJSONObject(i);
-                if (tokenDataJsonObject.has(CONTRACT_INITIAL_VALUE)) {
-                    String priceInEth = tokenDataJsonObject.getString(CONTRACT_INITIAL_VALUE)
-                            .replace(WalletEthManager.ETH_CURRENCY_CODE, "").trim();
-                    String name = tokenDataJsonObject.getString(BRConstants.NAME);
-                    String code = tokenDataJsonObject.getString(BRConstants.CODE);
-                    CurrencyEntity ethCurrencyEntity =
-                            new CurrencyEntity(WalletEthManager.ETH_CURRENCY_CODE, name, Float.valueOf(priceInEth), code);
-                    CurrencyEntity currencyEntity = convertEthRateToBtc(context, ethCurrencyEntity);
-                    currencyEntities.add(currencyEntity);
-                }
-            }
-            RatesRepository.getInstance(context).putCurrencyRates(currencyEntities);
-        } catch (JSONException | NumberFormatException ex) {
-            Log.e(TAG, "fetchNewTokensData: ", ex);
-        }
-    }
-
-    private static CurrencyEntity convertEthRateToBtc(Context context, CurrencyEntity currencyEntity) {
-        if (currencyEntity == null) {
-            return null;
-        }
-
-        CurrencyEntity ethBtcExchangeRate = RatesRepository.getInstance(context)
-                .getCurrencyByCode(WalletEthManager.ETH_CURRENCY_CODE, WalletBitcoinManager.BITCOIN_CURRENCY_CODE);
-        if (ethBtcExchangeRate == null) {
-            Log.e(TAG, "computeCccRates: ethBtcExchangeRate is null");
-            return null;
-        }
-        float newRate = new BigDecimal(currencyEntity.rate).multiply(new BigDecimal(ethBtcExchangeRate.rate)).floatValue();
-        return new CurrencyEntity(WalletBitcoinManager.BITCOIN_CURRENCY_CODE, currencyEntity.name, newRate, currencyEntity.iso);
-    }
-
-
-    /**
-     * uses https://bitpay.com/rates to fetch the rates as a backup in case our api is down.
-     * @param context
-     * @return JSONArray with rates data.
-     */
-    @WorkerThread
-    private static JSONArray backupFetchRates(Context context) {
-        String ratesJsonString = urlGET(context, BIT_PAY_URL);
-        JSONArray ratesJsonArray = null;
-        if (ratesJsonString != null) {
-            try {
-                JSONObject ratesJsonObject = new JSONObject(ratesJsonString);
-                ratesJsonArray = ratesJsonObject.getJSONArray(BRConstants.DATA);
-            } catch (JSONException e) {
-                Log.e(TAG, "backupFetchRates: ", e);
-            }
-            return ratesJsonArray;
-        }
-        return null;
-    }
-
-    @WorkerThread
-    public static String urlGET(Context app, String myURL) {
-        Request.Builder builder = new Request.Builder()
-                .url(myURL)
-                .header(BRConstants.HEADER_CONTENT_TYPE, BRConstants.CONTENT_TYPE_JSON_CHARSET_UTF8)
-                .header(BRConstants.HEADER_ACCEPT, BRConstants.CONTENT_TYPE_JSON_CHARSET_UTF8)
-                .get();
-
-        Request request = builder.build();
-        String bodyText = null;
-        APIClient.BRResponse resp = APIClient.getInstance(app).sendRequest(request, false);
-
-        try {
-            bodyText = resp.getBodyText();
-            String strDate = resp.getHeaders().get(BRConstants.DATE);
-            if (strDate == null) {
-                Log.e(TAG, "urlGET: strDate is null!");
-                return bodyText;
-            }
-            SimpleDateFormat formatter = new SimpleDateFormat(DATE_FORMAT, Locale.US);
-            Date date = formatter.parse(strDate);
-            long timeStamp = date.getTime();
-            BRSharedPrefs.putSecureTime(app, timeStamp);
-        } catch (ParseException e) {
-            Log.e(TAG, "urlGET: ", e);
-        }
-        return bodyText;
     }
 
     private void fetchPriceChanges(Context context, List<String> tokenList) {

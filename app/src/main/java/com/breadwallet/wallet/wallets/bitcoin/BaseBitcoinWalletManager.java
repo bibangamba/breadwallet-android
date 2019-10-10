@@ -1,6 +1,5 @@
 package com.breadwallet.wallet.wallets.bitcoin;
 
-import android.app.Activity;
 import android.content.Context;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
@@ -24,6 +23,9 @@ import com.breadwallet.core.BRCoreTransaction;
 import com.breadwallet.core.BRCoreWallet;
 import com.breadwallet.core.BRCoreWalletManager;
 import com.breadwallet.core.ethereum.BREthereumAmount;
+import com.breadwallet.dagger.component.AppComponent;
+import com.breadwallet.dagger.component.DaggerAppComponent;
+import com.breadwallet.dagger.module.AppModule;
 import com.breadwallet.model.FeeOption;
 import com.breadwallet.presenter.customviews.BRToast;
 import com.breadwallet.presenter.entities.BRMerkleBlockEntity;
@@ -35,6 +37,7 @@ import com.breadwallet.presenter.entities.PeerEntity;
 import com.breadwallet.presenter.entities.TxUiHolder;
 import com.breadwallet.repository.FeeRepository;
 import com.breadwallet.repository.RatesRepository;
+import com.breadwallet.repository.RepoModule;
 import com.breadwallet.tools.animation.BRDialog;
 import com.breadwallet.tools.manager.BRApiManager;
 import com.breadwallet.tools.manager.BRReportsManager;
@@ -70,37 +73,41 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import javax.inject.Inject;
+
 import static com.breadwallet.tools.util.BRConstants.ROUNDING_MODE;
 
 public abstract class BaseBitcoinWalletManager extends BRCoreWalletManager implements BaseWalletManager {
 
-    private static final String TAG = BaseBitcoinWalletManager.class.getSimpleName();
-
     public static final int ONE_BITCOIN_IN_SATOSHIS = 100000000; // 1 Bitcoin in satoshis, 100 millions
+    public static final String BITCOIN_CURRENCY_CODE = "BTC";
+    public static final String BITCASH_CURRENCY_CODE = "BCH";
+    private static final String TAG = BaseBitcoinWalletManager.class.getSimpleName();
     private static final long MAXIMUM_AMOUNT = 21000000; // Maximum number of coins available
     // TODO Android code shouldn't retry at all, all the retries should be handled by core, temporary fix for CORE-266
     private static final int SYNC_MAX_RETRY = 1;
     private static final int SYNC_RETRY_DELAY_SECONDS = 3;
-
-    public static final String BITCOIN_CURRENCY_CODE = "BTC";
-    public static final String BITCASH_CURRENCY_CODE = "BCH";
-
+    private static final int CREATE_WALLET_MAX_RETRY = 3;
+    @Inject
+    public FeeRepository mFeeRepository;
     private WalletSettingsConfiguration mSettingsConfig;
-
     private WalletManagerHelper mWalletManagerHelper;
     private int mSyncRetryCount = 0;
-    private static final int CREATE_WALLET_MAX_RETRY = 3;
     private int mCreateWalletAllowedRetries = CREATE_WALLET_MAX_RETRY;
     private WalletUiConfiguration mUiConfig;
-
     private Executor mListenerExecutor = Executors.newSingleThreadExecutor();
 
-    public enum RescanMode {
-        FROM_BLOCK, FROM_CHECKPOINT, FULL
-    }
 
     BaseBitcoinWalletManager(Context context, BRCoreMasterPubKey masterPubKey, BRCoreChainParams chainParams, double earliestPeerTime) {
         super(masterPubKey, chainParams, earliestPeerTime);
+        AppComponent component = DaggerAppComponent.builder()
+                .appModule(new AppModule(context))
+                .repoModule(new RepoModule())
+                .build();
+        component.inject(this);
+
+        Log.d(TAG, "#################### mFeeRepository: " + mFeeRepository);
+
         mWalletManagerHelper = new WalletManagerHelper();
 
         Log.d(getTag(), "connectWallet:" + Thread.currentThread().getName());
@@ -136,7 +143,6 @@ public abstract class BaseBitcoinWalletManager extends BRCoreWalletManager imple
         // Try again
         return createWallet();
     }
-
 
     @Override
     protected BRCoreWallet.Listener createWalletListener() {
@@ -240,11 +246,11 @@ public abstract class BaseBitcoinWalletManager extends BRCoreWalletManager imple
 
         // Retrieve update fee
         String currencyCode = getCurrencyCode();
-        BRApiManager.updateFeeForCurrency(app, currencyCode);
+        BRApiManager.getInstance().updateFeeForCurrency(app, currencyCode);
 
         // Set updated fee in wallet
-        FeeOption preferredFeeOption = FeeRepository.getInstance(app).getPreferredFeeOptionByCurrency(currencyCode);
-        BigDecimal preferredFee = FeeRepository.getInstance(app).getFeeByCurrency(currencyCode, preferredFeeOption);
+        FeeOption preferredFeeOption = mFeeRepository.getPreferredFeeOptionByCurrency(currencyCode);
+        BigDecimal preferredFee = mFeeRepository.getFeeByCurrency(currencyCode, preferredFeeOption);
         getWallet().setFeePerKb(preferredFee.longValue());
     }
 
@@ -675,7 +681,6 @@ public abstract class BaseBitcoinWalletManager extends BRCoreWalletManager imple
 
     }
 
-
     public void txPublished(final String error) {
         super.txPublished(error);
     }
@@ -996,5 +1001,9 @@ public abstract class BaseBitcoinWalletManager extends BRCoreWalletManager imple
     @Override
     public boolean checkConfirmations(int conformations) {
         return mWalletManagerHelper.checkConfirmations(conformations);
+    }
+
+    public enum RescanMode {
+        FROM_BLOCK, FROM_CHECKPOINT, FULL
     }
 }

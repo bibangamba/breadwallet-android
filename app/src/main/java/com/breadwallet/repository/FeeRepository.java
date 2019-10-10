@@ -49,7 +49,7 @@ public class FeeRepository {
         return mInstance;
     }
 
-    private FeeRepository(Context context) {
+    FeeRepository(Context context) {
         mContext = context;
     }
 

@@ -240,6 +240,11 @@ dependencies {
     androidTestImplementation "org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version"
     testImplementation "org.jetbrains.kotlin:kotlin-test:$kotlin_version"
     testImplementation "org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version"
+
+
+    //dagger stuff
+    api 'com.google.dagger:dagger:2.24'
+    annotationProcessor 'com.google.dagger:dagger-compiler:2.24'
 }
 
 apply plugin: 'com.google.gms.google-services'

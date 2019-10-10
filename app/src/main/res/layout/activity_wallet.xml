@@ -62,7 +62,7 @@
             android:filterTouchesWhenObscured="true"
             android:focusableInTouchMode="true"
             android:orientation="vertical"
-            tools:context="com.breadwallet.ui.wallet.WalletActivity">
+            tools:applicationContext="com.breadwallet.ui.wallet.WalletActivity">
 
 
             <android.support.design.widget.AppBarLayout

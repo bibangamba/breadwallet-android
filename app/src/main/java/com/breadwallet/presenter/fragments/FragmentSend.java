@@ -24,7 +24,6 @@ import android.widget.TextView;
 import com.breadwallet.BuildConfig;
 import com.breadwallet.R;
 import com.breadwallet.model.FeeOption;
-import com.breadwallet.ui.wallet.WalletActivity;
 import com.breadwallet.presenter.customviews.BRButton;
 import com.breadwallet.presenter.customviews.BRDialogView;
 import com.breadwallet.presenter.customviews.BRKeyboard;
@@ -32,10 +31,10 @@ import com.breadwallet.presenter.customviews.BaseTextView;
 import com.breadwallet.presenter.entities.CryptoRequest;
 import com.breadwallet.presenter.fragments.utils.ModalDialogFragment;
 import com.breadwallet.presenter.viewmodels.SendViewModel;
-import com.breadwallet.tools.animation.UiUtils;
 import com.breadwallet.tools.animation.BRDialog;
 import com.breadwallet.tools.animation.SlideDetector;
 import com.breadwallet.tools.animation.SpringAnimator;
+import com.breadwallet.tools.animation.UiUtils;
 import com.breadwallet.tools.manager.BRClipboardManager;
 import com.breadwallet.tools.manager.BRReportsManager;
 import com.breadwallet.tools.manager.BRSharedPrefs;
@@ -44,9 +43,10 @@ import com.breadwallet.tools.threads.executor.BRExecutor;
 import com.breadwallet.tools.util.BRConstants;
 import com.breadwallet.tools.util.CurrencyUtils;
 import com.breadwallet.tools.util.Utils;
+import com.breadwallet.ui.wallet.WalletActivity;
 import com.breadwallet.wallet.WalletsMaster;
-import com.breadwallet.wallet.util.CryptoUriParser;
 import com.breadwallet.wallet.abstracts.BaseWalletManager;
+import com.breadwallet.wallet.util.CryptoUriParser;
 import com.breadwallet.wallet.wallets.bitcoin.BaseBitcoinWalletManager;
 import com.breadwallet.wallet.wallets.ethereum.WalletEthManager;
 import com.platform.HTTPServer;
@@ -81,7 +81,8 @@ import java.math.BigDecimal;
 
 public class FragmentSend extends ModalDialogFragment implements BRKeyboard.OnInsertListener {
     private static final String TAG = FragmentSend.class.getName();
-
+    private static final int CURRENCY_CODE_TEXT_SIZE = 18;
+    private static boolean mIsSendShown;
     private BRKeyboard mKeyboard;
     private EditText mAddressEdit;
     private Button mScan;
@@ -105,16 +106,21 @@ public class FragmentSend extends ModalDialogFragment implements BRKeyboard.OnIn
     private BaseTextView mFeeDescription;
     private BaseTextView mEconomyFeeWarningText;
     private boolean mIsAmountLabelShown = true;
-    private static final int CURRENCY_CODE_TEXT_SIZE = 18;
     private SendViewModel mViewModel;
     private ViewGroup mBackgroundLayout;
     private ViewGroup mSignalLayout;
-    private static boolean mIsSendShown;
     private boolean mAllowEditFee = false;
+
+    public static boolean isIsSendShown() {
+        return mIsSendShown;
+    }
+
+    public static void setIsSendShown(boolean isSendShown) {
+        mIsSendShown = isSendShown;
+    }
 
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
-
         ViewGroup rootView = assignRootView((ViewGroup) inflater.inflate(R.layout.fragment_send, container, false));
         mBackgroundLayout = assignBackgroundLayout((ViewGroup) rootView.findViewById(R.id.background_layout));
         mSignalLayout = assignSignalLayout((ViewGroup) rootView.findViewById(R.id.signal_layout));
@@ -456,10 +462,10 @@ public class FragmentSend extends ModalDialogFragment implements BRKeyboard.OnIn
                             // Show success or error message
                             if (!Utils.isNullOrEmpty(transactionHash) && succeeded) {
                                 UiUtils.showBreadSignal(activity, activity.getString(R.string.Alerts_sendSuccess),
-                                    activity.getString(R.string.Alerts_sendSuccessSubheader), R.drawable.ic_check_mark_white, () -> UiUtils.killAllFragments(activity));
+                                        activity.getString(R.string.Alerts_sendSuccessSubheader), R.drawable.ic_check_mark_white, () -> UiUtils.killAllFragments(activity));
                             } else {
                                 UiUtils.showBreadSignal(activity, activity.getString(R.string.Alert_error),
-                                    activity.getString(R.string.Alerts_sendFailure), R.drawable.ic_error_outline_black_24dp, () -> UiUtils.killAllFragments(activity));
+                                        activity.getString(R.string.Alerts_sendFailure), R.drawable.ic_error_outline_black_24dp, () -> UiUtils.killAllFragments(activity));
                             }
 
                         });
@@ -755,6 +761,7 @@ public class FragmentSend extends ModalDialogFragment implements BRKeyboard.OnIn
 
     /**
      * Sets the given fee option as selected.
+     *
      * @param feeOption the fee option to be selected
      */
     private void setFeeOption(FeeOption feeOption) {
@@ -884,13 +891,5 @@ public class FragmentSend extends ModalDialogFragment implements BRKeyboard.OnIn
     @Override
     public void onKeyInsert(String key) {
         handleClick(key);
-    }
-
-    public static boolean isIsSendShown() {
-        return mIsSendShown;
-    }
-
-    public static void setIsSendShown(boolean isSendShown) {
-        mIsSendShown = isSendShown;
     }
 }
